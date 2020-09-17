@@ -2,6 +2,8 @@ import * as cdk from "@aws-cdk/core";
 import * as ecs from "@aws-cdk/aws-ecs";
 import * as ec2 from "@aws-cdk/aws-ec2";
 import * as elbv2 from "@aws-cdk/aws-elasticloadbalancingv2";
+import * as logs from "@aws-cdk/aws-logs";
+import * as s3 from "@aws-cdk/aws-s3";
 import { PythonFunction } from "@aws-cdk/aws-lambda-python";
 import * as elb_targets from "@aws-cdk/aws-elasticloadbalancingv2-targets";
 
@@ -31,15 +33,25 @@ export class CdkEcsExampleStack extends cdk.Stack {
   }
 
   createFargateService(
-    vpc: ec2.Vpc,
+    vpc: ec2.IVpc,
     cluster: ecs.Cluster,
     listener: elbv2.ApplicationListener
   ) {
     const taskDefinition = new ecs.FargateTaskDefinition(this, "task-def");
 
+    const logGroup = new logs.LogGroup(this, "example-service-logs", {
+      logGroupName: "example-service-logs",
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     const webserverContainer = taskDefinition.addContainer("webserver", {
       image: ecs.ContainerImage.fromAsset("container"),
+      logging: ecs.LogDrivers.awsLogs({
+        streamPrefix: "my-example-service",
+        logGroup,
+      }),
     });
+
     webserverContainer.addPortMappings({ containerPort: 80 });
 
     const service = new ecs.FargateService(this, "example-service", {
@@ -66,6 +78,11 @@ export class CdkEcsExampleStack extends cdk.Stack {
 
   attachLambda(listener: elbv2.ApplicationListener) {
     const func = new PythonFunction(this, "lambda-func", { entry: "lambda" });
+
+    const bucket = new s3.Bucket(this, "bucket", {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    bucket.grantReadWrite(func);
 
     listener.addTargets("lambda", {
       conditions: [elbv2.ListenerCondition.pathPatterns(["/lambda*"])],
