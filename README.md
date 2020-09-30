@@ -2,10 +2,22 @@
 
 This example shows a minimal ECS+Lambda service running behind an ALB with autoscaling enabled.
 
-Simply run `cdk deploy` to deploy the stack.
+## Usage
 
-The stack contains:
+Requirements:
 
+- A current version of NodeJS installed
+
+1. Install yarn and the CDK CLI: `npm install aws-cdk yarn`
+2. Install dependencies: `yarn install`
+3. Then simply run `cdk deploy` to deploy the stack.
+4. When the deploy is complete, a stack output will be provided with a link to the load balancer
+
+## Details
+
+This stack contains:
+
+- A VPC with public/private subnets and NAT gateways (there are commented out blocks of a public-zone-only VPC and using an existing VPC as alternatives)
 - An Application load balancer, with the default route pointing to an ECS service, and anything on the path `/lambda*` routing to a Lambda
 - ECS service:
   - The ECS service is running 2-10 tasks with autoscaling based on a target of 60% CPU utilization

@@ -11,7 +11,25 @@ export class CdkEcsExampleStack extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    //Create a new VPC
     const vpc = new ec2.Vpc(this, "ecs-example");
+
+    // Alternatively, we can create a VPC without private subnets or NAT gateways
+    // Best practice is to have a separate private subnet to provide more layers of
+    // security; but this is cheaper and acceptable for a proof-of-concept or
+    // exploring the problem.
+
+    // const vpc = new ec2.Vpc(this, "ecs-example", {
+    //   subnetConfiguration: [
+    //     { name: "public1", subnetType: ec2.SubnetType.PUBLIC },
+    //     { name: "public2", subnetType: ec2.SubnetType.PUBLIC },
+    //   ],
+    // });
+
+    // Or you can use an existing VPC by looking it up.
+    // const vpc = ec2.Vpc.fromLookup(this, "ecs-exmaple-vpc", {
+    //   vpcId: "vpc-xxxxxxxx",
+    // });
 
     const cluster = new ecs.Cluster(this, "ecs-example-cluster", {
       vpc,
@@ -22,7 +40,10 @@ export class CdkEcsExampleStack extends cdk.Stack {
     const loadBalancer = new elbv2.ApplicationLoadBalancer(
       this,
       "ecs-example-alb",
-      { vpc, internetFacing: true }
+      {
+        vpc,
+        internetFacing: true,
+      }
     );
 
     const listener = loadBalancer.addListener("http", { port: 80 });
@@ -30,6 +51,10 @@ export class CdkEcsExampleStack extends cdk.Stack {
     const service = this.createFargateService(vpc, cluster, listener);
     this.scaleFargateService(service);
     this.attachLambda(listener);
+
+    new cdk.CfnOutput(this, "LoadBalancerURL", {
+      value: `http://${loadBalancer.loadBalancerDnsName}`,
+    });
   }
 
   createFargateService(
@@ -45,27 +70,35 @@ export class CdkEcsExampleStack extends cdk.Stack {
     });
 
     const webserverContainer = taskDefinition.addContainer("webserver", {
-      image: ecs.ContainerImage.fromAsset("container"),
+      image: ecs.ContainerImage.fromAsset("./container"), // The CDK will build our container for us upon deploy
       logging: ecs.LogDrivers.awsLogs({
-        streamPrefix: "my-example-service",
+        streamPrefix: "webserver",
         logGroup,
       }),
     });
 
     webserverContainer.addPortMappings({ containerPort: 80 });
 
+    // NOTE: If your container is not in a private subnet, it must be allocated a public IP.
+    // If you do not do this, the container will be unable to reach the registry to pull the container image.
     const service = new ecs.FargateService(this, "example-service", {
       serviceName: "example-service",
       cluster,
       taskDefinition,
       desiredCount: 2,
+      // assignPublicIp: true,
     });
 
-    listener.addTargets("ecs-service", { targets: [service], port: 80 });
+    listener.addTargets("ecs-service", {
+      targets: [service],
+      port: 80,
+      deregistrationDelay: cdk.Duration.minutes(1),
+    });
 
     return service;
   }
 
+  // Enabling scaling requires only the two calls below, to set a min/max and to set a metric to scale on.
   scaleFargateService(service: ecs.FargateService) {
     const scaling = service.autoScaleTaskCount({
       maxCapacity: 10,
@@ -76,6 +109,9 @@ export class CdkEcsExampleStack extends cdk.Stack {
     });
   }
 
+  // We can also attach a lambda and use the ALB to route specific paths to it.
+  // This is commonly used to add some new functionality or have a different
+  // service, e.g. an admin panel hosted by something else.
   attachLambda(listener: elbv2.ApplicationListener) {
     const func = new PythonFunction(this, "lambda-func", { entry: "lambda" });
 
