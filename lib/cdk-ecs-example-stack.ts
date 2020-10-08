@@ -5,6 +5,7 @@ import * as elbv2 from "@aws-cdk/aws-elasticloadbalancingv2";
 import * as logs from "@aws-cdk/aws-logs";
 import * as s3 from "@aws-cdk/aws-s3";
 import { PythonFunction } from "@aws-cdk/aws-lambda-python";
+import * as lambda from "@aws-cdk/aws-lambda";
 import * as elb_targets from "@aws-cdk/aws-elasticloadbalancingv2-targets";
 
 export class CdkEcsExampleStack extends cdk.Stack {
@@ -113,11 +114,15 @@ export class CdkEcsExampleStack extends cdk.Stack {
   // This is commonly used to add some new functionality or have a different
   // service, e.g. an admin panel hosted by something else.
   attachLambda(listener: elbv2.ApplicationListener) {
-    const func = new PythonFunction(this, "lambda-func", { entry: "lambda" });
-
     const bucket = new s3.Bucket(this, "bucket", {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
+
+    const func = new PythonFunction(this, "lambda-func", {
+      entry: "lambda",
+      environment: { bucket_name: bucket.bucketName },
+    });
+
     bucket.grantReadWrite(func);
 
     listener.addTargets("lambda", {
