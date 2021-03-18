@@ -3,10 +3,8 @@ import * as ecs from "@aws-cdk/aws-ecs";
 import * as ec2 from "@aws-cdk/aws-ec2";
 import * as elbv2 from "@aws-cdk/aws-elasticloadbalancingv2";
 import * as logs from "@aws-cdk/aws-logs";
-import * as s3 from "@aws-cdk/aws-s3";
-import { PythonFunction } from "@aws-cdk/aws-lambda-python";
-import * as lambda from "@aws-cdk/aws-lambda";
 import * as elb_targets from "@aws-cdk/aws-elasticloadbalancingv2-targets";
+import * as efs from "@aws-cdk/aws-efs";
 
 export class CdkEcsExampleStack extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
@@ -32,6 +30,19 @@ export class CdkEcsExampleStack extends cdk.Stack {
     //   vpcId: "vpc-xxxxxxxx",
     // });
 
+    const filesystemSecurityGroup = new ec2.SecurityGroup(
+      this,
+      "filesystemSecurityGroup",
+      { vpc }
+    );
+
+    const filesystem = new efs.FileSystem(this, "filesystem", {
+      vpc,
+      encrypted: true,
+      securityGroup: filesystemSecurityGroup,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     const cluster = new ecs.Cluster(this, "ecs-example-cluster", {
       vpc,
       clusterName: "ecs-example",
@@ -49,9 +60,14 @@ export class CdkEcsExampleStack extends cdk.Stack {
 
     const listener = loadBalancer.addListener("http", { port: 80 });
 
-    const service = this.createFargateService(vpc, cluster, listener);
+    const service = this.createFargateService(
+      vpc,
+      cluster,
+      listener,
+      filesystem,
+      filesystemSecurityGroup
+    );
     this.scaleFargateService(service);
-    this.attachLambda(listener);
 
     new cdk.CfnOutput(this, "LoadBalancerURL", {
       value: `http://${loadBalancer.loadBalancerDnsName}`,
@@ -61,7 +77,9 @@ export class CdkEcsExampleStack extends cdk.Stack {
   createFargateService(
     vpc: ec2.IVpc,
     cluster: ecs.Cluster,
-    listener: elbv2.ApplicationListener
+    listener: elbv2.ApplicationListener,
+    filesystem: efs.IFileSystem,
+    filesystemSecurityGroup: ec2.ISecurityGroup
   ) {
     const taskDefinition = new ecs.FargateTaskDefinition(this, "task-def");
 
@@ -70,12 +88,34 @@ export class CdkEcsExampleStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    const serviceSecurityGroup = new ec2.SecurityGroup(
+      this,
+      "serviceSecurityGroup",
+      { vpc }
+    );
+
+    const NFSPort = ec2.Port.tcp(2049);
+
+    filesystemSecurityGroup.addIngressRule(serviceSecurityGroup, NFSPort);
+    serviceSecurityGroup.addEgressRule(filesystemSecurityGroup, NFSPort);
+
+    taskDefinition.addVolume({
+      name: "efs",
+      efsVolumeConfiguration: { fileSystemId: filesystem.fileSystemId },
+    });
+
     const webserverContainer = taskDefinition.addContainer("webserver", {
       image: ecs.ContainerImage.fromAsset("./container"), // The CDK will build our container for us upon deploy
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: "webserver",
         logGroup,
       }),
+    });
+
+    webserverContainer.addMountPoints({
+      containerPath: "/mnt",
+      readOnly: false,
+      sourceVolume: "efs",
     });
 
     webserverContainer.addPortMappings({ containerPort: 80 });
@@ -88,6 +128,7 @@ export class CdkEcsExampleStack extends cdk.Stack {
       taskDefinition,
       desiredCount: 2,
       // assignPublicIp: true,
+      securityGroups: [serviceSecurityGroup],
     });
 
     listener.addTargets("ecs-service", {
@@ -107,28 +148,6 @@ export class CdkEcsExampleStack extends cdk.Stack {
     });
     scaling.scaleOnCpuUtilization("CpuScaling", {
       targetUtilizationPercent: 60,
-    });
-  }
-
-  // We can also attach a lambda and use the ALB to route specific paths to it.
-  // This is commonly used to add some new functionality or have a different
-  // service, e.g. an admin panel hosted by something else.
-  attachLambda(listener: elbv2.ApplicationListener) {
-    const bucket = new s3.Bucket(this, "bucket", {
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-
-    const func = new PythonFunction(this, "lambda-func", {
-      entry: "lambda",
-      environment: { bucket_name: bucket.bucketName },
-    });
-
-    bucket.grantReadWrite(func);
-
-    listener.addTargets("lambda", {
-      conditions: [elbv2.ListenerCondition.pathPatterns(["/lambda*"])],
-      priority: 10,
-      targets: [new elb_targets.LambdaTarget(func)],
     });
   }
 }
